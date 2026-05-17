@@ -5,12 +5,16 @@
 #   az login
 #   az extension add --name containerapp   # once
 #
-# Secrets: AiDecisionMakingML/.env or ../AiDecisionMakingBackend/db/.env
-#   AZURE_SQL_* , AZURE_STORAGE_ACCOUNT_KEY (or connection strings)
+# Secrets (pick one — no local password file required for cloud):
+#   --from-keyvault [vault]   Read SQL/Blob secrets from Azure Key Vault (recommended)
+#   env vars already exported  e.g. GitHub Actions secrets → script (never written to disk)
+#   .env file                  optional local dev only
+#
+# At runtime the Job uses ACA encrypted secrets (secretref:), not .env on disk.
 #
 # Usage:
-#   ./infra/deploy-aca-daily-train.sh
-#   ./infra/deploy-aca-daily-train.sh --run-now    # trigger one execution after deploy
+#   ./infra/deploy-aca-daily-train.sh --from-keyvault ai-rag-key --run-now
+#   ./infra/deploy-aca-daily-train.sh --skip-secret-update   # image-only update
 
 set -euo pipefail
 
@@ -20,33 +24,61 @@ ACA_ENV_NAME="${ACA_ENV_NAME:-airag-aca-env}"
 IMAGE_NAME="ai-rag-ml/train:latest"
 CRON="${CRON:-15 2 * * *}"
 RUN_NOW=false
+FROM_KEYVAULT=""
+SKIP_SECRET_UPDATE=false
+KEYVAULT_SQL_PASSWORD_SECRET="${KEYVAULT_SQL_PASSWORD_SECRET:-azure-sql-password}"
+KEYVAULT_STORAGE_KEY_SECRET="${KEYVAULT_STORAGE_KEY_SECRET:-airagblob-account-key}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-for arg in "$@"; do
-  case "$arg" in
-    --run-now) RUN_NOW=true ;;
-    -h|--help)
-      sed -n '1,20p' "$0"
-      exit 0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --run-now) RUN_NOW=true; shift ;;
+    --from-keyvault)
+      if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+        FROM_KEYVAULT="$2"
+        shift 2
+      else
+        FROM_KEYVAULT="ai-rag-key"
+        shift
+      fi
       ;;
-    *) echo "Unknown arg: $arg" >&2; exit 1 ;;
+    --skip-secret-update) SKIP_SECRET_UPDATE=true; shift ;;
+    -h|--help) sed -n '1,28p' "$0"; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 
 load_env_file() {
   local f="$1"
   [[ -f "$f" ]] || return 0
-  echo "Loading env from $f"
+  echo "Loading optional env from $f (non-secret defaults only if unset)"
   set -a
   # shellcheck disable=SC1090
   source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$f" | sed 's/\r$//')
   set +a
 }
 
-load_env_file "$ROOT/.env"
-load_env_file "$ROOT/../AiDecisionMakingBackend/db/.env"
+kv_secret() {
+  az keyvault secret show --vault-name "$1" --name "$2" --query value -o tsv 2>/dev/null
+}
+
+if [[ -n "$FROM_KEYVAULT" ]]; then
+  echo "Loading secrets from Key Vault: $FROM_KEYVAULT"
+  AZURE_SQL_PASSWORD="${AZURE_SQL_PASSWORD:-$(kv_secret "$FROM_KEYVAULT" "$KEYVAULT_SQL_PASSWORD_SECRET")}"
+  AZURE_STORAGE_ACCOUNT_KEY="${AZURE_STORAGE_ACCOUNT_KEY:-$(kv_secret "$FROM_KEYVAULT" "$KEYVAULT_STORAGE_KEY_SECRET")}"
+  export AZURE_SQL_PASSWORD AZURE_STORAGE_ACCOUNT_KEY
+fi
+
+# Non-secret defaults (safe in .env or hardcoded)
+export AZURE_SQL_SERVER="${AZURE_SQL_SERVER:-ai-rag-sql-server.database.windows.net}"
+export AZURE_SQL_DATABASE="${AZURE_SQL_DATABASE:-ai-rag-db-1}"
+
+if [[ -z "${AZURE_SQL_PASSWORD:-}" || -z "${AZURE_STORAGE_ACCOUNT_KEY:-}" ]]; then
+  load_env_file "$ROOT/.env"
+  load_env_file "$ROOT/../AiDecisionMakingBackend/db/.env"
+fi
 
 if ! command -v az >/dev/null 2>&1; then
   echo "ERROR: Azure CLI not found. Install: brew install azure-cli" >&2
@@ -73,14 +105,17 @@ echo "Image:    $FULL_IMAGE"
 echo "ACA env:  $ACA_ENV_NAME"
 echo "Job:      $JOB_NAME"
 
-: "${AZURE_SQL_SERVER:?Set AZURE_SQL_SERVER in .env}"
-: "${AZURE_SQL_DATABASE:?Set AZURE_SQL_DATABASE in .env}"
-: "${AZURE_SQL_USER:?Set AZURE_SQL_USER in .env}"
-: "${AZURE_SQL_PASSWORD:?Set AZURE_SQL_PASSWORD in .env}"
+: "${AZURE_SQL_USER:?Set AZURE_SQL_USER (env or Key Vault metadata)}"
 
-if [[ -z "${AZURE_STORAGE_ACCOUNT_KEY:-}" && -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
-  echo "ERROR: Set AZURE_STORAGE_ACCOUNT_KEY or AZURE_STORAGE_CONNECTION_STRING" >&2
-  exit 1
+if [[ "$SKIP_SECRET_UPDATE" != true ]]; then
+  if [[ -z "${AZURE_SQL_PASSWORD:-}" ]]; then
+    echo "ERROR: SQL password missing. Use --from-keyvault, export AZURE_SQL_PASSWORD, or .env (local dev)." >&2
+    exit 1
+  fi
+  if [[ -z "${AZURE_STORAGE_ACCOUNT_KEY:-}" && -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
+    echo "ERROR: Storage key missing. Use --from-keyvault or export AZURE_STORAGE_ACCOUNT_KEY." >&2
+    exit 1
+  fi
 fi
 
 STORAGE_KEY="${AZURE_STORAGE_ACCOUNT_KEY:-}"
@@ -131,20 +166,36 @@ ENV_VARS=(
 
 echo ""
 echo "=== 3/4 Create or update scheduled Job ==="
-if az containerapp job show --name "$JOB_NAME" --resource-group "$RG" -o none 2>/dev/null; then
-  az containerapp job update \
-    --name "$JOB_NAME" \
-    --resource-group "$RG" \
-    --image "$FULL_IMAGE" \
-    --cpu 0.5 \
-    --memory 1.0Gi \
-    --registry-server "$LOGIN_SERVER" \
-    --registry-username "$ACR_USER" \
-    --registry-password "$ACR_PASS" \
-    --set-env-vars "${ENV_VARS[@]}" \
-    --secrets "azure-sql-password=$AZURE_SQL_PASSWORD" "azure-storage-account-key=$STORAGE_KEY" \
-    --cron-expression "$CRON"
+SECRET_ARGS=()
+if [[ "$SKIP_SECRET_UPDATE" != true ]]; then
+  SECRET_ARGS=(--secrets "azure-sql-password=$AZURE_SQL_PASSWORD" "azure-storage-account-key=$STORAGE_KEY")
 else
+  echo "Skipping secret injection (--skip-secret-update); using secrets already stored on the Job."
+fi
+
+if az containerapp job show --name "$JOB_NAME" --resource-group "$RG" -o none 2>/dev/null; then
+  UPDATE_CMD=(
+    az containerapp job update
+    --name "$JOB_NAME"
+    --resource-group "$RG"
+    --image "$FULL_IMAGE"
+    --cpu 0.5
+    --memory 1.0Gi
+    --registry-server "$LOGIN_SERVER"
+    --registry-username "$ACR_USER"
+    --registry-password "$ACR_PASS"
+    --set-env-vars "${ENV_VARS[@]}"
+    --cron-expression "$CRON"
+  )
+  if [[ ${#SECRET_ARGS[@]} -gt 0 ]]; then
+    UPDATE_CMD+=("${SECRET_ARGS[@]}")
+  fi
+  "${UPDATE_CMD[@]}"
+else
+  if [[ "$SKIP_SECRET_UPDATE" == true ]]; then
+    echo "ERROR: Job does not exist yet; cannot use --skip-secret-update on first deploy." >&2
+    exit 1
+  fi
   az containerapp job create \
     --name "$JOB_NAME" \
     --resource-group "$RG" \
