@@ -42,6 +42,10 @@ def publish_artifact(artifact: dict[str, Any], version: str) -> list[str]:
         f"{prefix}/risk_pipeline_{version}.json",
         f"{prefix}/risk_pipeline_latest.json",
     ]
+    # Daily snapshots (version = YYYY-MM-DD) also land under dated folder for audit.
+    if len(version) == 10 and version[4] == "-" and version[7] == "-":
+        paths.append(f"{prefix}/daily/{version}/risk_pipeline.json")
+
     uploaded: list[str] = []
     for path in paths:
         uploaded.append(upload_json(path, artifact))

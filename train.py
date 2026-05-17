@@ -20,8 +20,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -36,6 +36,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train logistic risk cascade and export to blob.")
     parser.add_argument("--calibration-id", default="", help="risk_feature_binned calibration_id")
     parser.add_argument("--version", default="v1", help="Artifact version tag for blob name")
+    parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="Use UTC date as version (YYYY-MM-DD); for scheduled daily train",
+    )
     parser.add_argument("--no-upload", action="store_true", help="Skip Azure Blob upload")
     parser.add_argument(
         "--out",
@@ -46,12 +51,17 @@ def main() -> None:
     args = parser.parse_args()
 
     cal = args.calibration_id.strip() or calibration_id()
-    print(f"Training with calibration_id={cal} ...")
+    version = (
+        datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if args.daily
+        else args.version
+    )
+    print(f"Training calibration_id={cal} version={version} ...")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     artifact = train_and_export(
         cal_id=cal,
-        version=args.version,
+        version=version,
         upload_blob=not args.no_upload,
         out_path=str(args.out),
     )

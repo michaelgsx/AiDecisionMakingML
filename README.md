@@ -39,13 +39,29 @@ cp .env.example .env
 # Blob: AZURE_STORAGE_ACCOUNT_NAME=airagblob, AZURE_STORAGE_ACCOUNT_KEY=...
 
 python train.py
+python train.py --daily          # version tag = UTC date, for scheduled jobs
 python train.py --no-upload --out artifacts/risk_pipeline_v1.json
 ```
 
+## Daily train (`ai-rag-ml`)
+
+**GitHub Actions** (`.github/workflows/daily-train.yml`): runs at **02:15 UTC** daily and on manual dispatch; trains and uploads weights to **airagblob** / **logistic**.
+
+Configure repository secrets:
+
+| Secret | Required |
+|--------|----------|
+| `AZURE_SQL_SERVER`, `AZURE_SQL_DATABASE`, `AZURE_SQL_USER`, `AZURE_SQL_PASSWORD` | Yes (or `AZURE_SQL_CONNECTION_STRING`) |
+| `AZURE_STORAGE_ACCOUNT_KEY` | Yes (or `AZURE_STORAGE_CONNECTION_STRING`) |
+| `AZURE_STORAGE_ACCOUNT_NAME` | Optional (default `airagblob`) |
+
+Optional: run the same job on Azure as a **Container Apps Job** — see `infra/aca-job-daily-train.md` and `Dockerfile`.
+
 **Blob layout** (container `logistic`):
 
-- `models/risk_pipeline_v1.json`
 - `models/risk_pipeline_latest.json`
+- `models/risk_pipeline_YYYY-MM-DD.json`
+- `models/daily/YYYY-MM-DD/risk_pipeline.json`
 
 ## Env
 

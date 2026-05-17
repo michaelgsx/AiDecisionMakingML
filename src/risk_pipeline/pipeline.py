@@ -163,7 +163,10 @@ def train_and_export(
     if upload_blob:
         from .blob_export import publish_artifact
 
-        paths = publish_artifact(payload, version)
+        try:
+            paths = publish_artifact(payload, version)
+        except Exception as e:
+            raise RuntimeError(f"Blob upload failed: {e}") from e
         artifact.training_summary["blob_paths"] = paths
 
     return artifact
