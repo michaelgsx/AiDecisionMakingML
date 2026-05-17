@@ -1,0 +1,100 @@
+# Build Docker image in airagacr and deploy ACA scheduled Job (ai-rag-ml-daily-train).
+#
+# Secrets (same SP as backend deploy):
+#   AZURE_CREDENTIALS
+#   AZURE_SQL_SERVER, AZURE_SQL_DATABASE, AZURE_SQL_USER, AZURE_SQL_PASSWORD
+#   AZURE_STORAGE_ACCOUNT_KEY
+# Optional variables:
+#   ACR_NAME (default airagacr)
+#   ACA_RESOURCE_GROUP — if empty, resolved from ACR
+
+name: Deploy ACA daily train (airagacr)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v1]
+    paths:
+      - "Dockerfile"
+      - "train.py"
+      - "src/**"
+      - "infra/deploy-aca-daily-train.sh"
+      - ".github/workflows/deploy-aca-daily-train.yml"
+
+env:
+  ACR_NAME: airagacr
+  JOB_NAME: ai-rag-ml-daily-train
+  ACA_ENV_NAME: airag-aca-env
+  IMAGE_NAME: ai-rag-ml/train:latest
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Add containerapp extension
+        run: az extension add --name containerapp --only-show-errors
+
+      - name: Resolve resource group from ACR
+        id: acr
+        run: |
+          RG=$(az acr show --name "${{ env.ACR_NAME }}" --query resourceGroup -o tsv)
+          LOC=$(az acr show --name "${{ env.ACR_NAME }}" --query location -o tsv)
+          SERVER=$(az acr show --name "${{ env.ACR_NAME }}" --query loginServer -o tsv)
+          echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
+          echo "location=$LOC" >> "$GITHUB_OUTPUT"
+          echo "login_server=$SERVER" >> "$GITHUB_OUTPUT"
+
+      - name: Build image in ACR
+        run: |
+          az acr build \
+            --registry "${{ env.ACR_NAME }}" \
+            --image "${{ env.IMAGE_NAME }}" \
+            --file Dockerfile \
+            .
+
+      - name: Ensure Container Apps environment
+        run: |
+          RG="${{ steps.acr.outputs.resource_group }}"
+          LOC="${{ steps.acr.outputs.location }}"
+          if ! az containerapp env show --name "${{ env.ACA_ENV_NAME }}" --resource-group "$RG" -o none 2>/dev/null; then
+            az containerapp env create \
+              --name "${{ env.ACA_ENV_NAME }}" \
+              --resource-group "$RG" \
+              --location "$LOC"
+          fi
+
+      - name: Deploy scheduled job
+        env:
+          AZURE_SQL_SERVER: ${{ secrets.AZURE_SQL_SERVER }}
+          AZURE_SQL_DATABASE: ${{ secrets.AZURE_SQL_DATABASE }}
+          AZURE_SQL_USER: ${{ secrets.AZURE_SQL_USER }}
+          AZURE_SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
+          AZURE_STORAGE_ACCOUNT_KEY: ${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}
+          SKIP_ACR_BUILD: "1"
+        run: |
+          chmod +x infra/deploy-aca-daily-train.sh
+          export ACR_NAME="${{ env.ACR_NAME }}"
+          export JOB_NAME="${{ env.JOB_NAME }}"
+          export ACA_ENV_NAME="${{ env.ACA_ENV_NAME }}"
+          export AZURE_STORAGE_ACCOUNT_NAME=airagblob
+          export AZURE_STORAGE_CONTAINER=logistic
+          ./infra/deploy-aca-daily-train.sh
+
+      - name: Start one training run (smoke test)
+        run: |
+          az containerapp job start \
+            --name "${{ env.JOB_NAME }}" \
+            --resource-group "${{ steps.acr.outputs.resource_group }}"
+
+      - name: Azure logout
+        if: always()
+        run: az logout || true

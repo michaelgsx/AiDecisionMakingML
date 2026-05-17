@@ -55,7 +55,18 @@ Configure repository secrets:
 | `AZURE_STORAGE_ACCOUNT_KEY` | Yes (or `AZURE_STORAGE_CONNECTION_STRING`) |
 | `AZURE_STORAGE_ACCOUNT_NAME` | Optional (default `airagblob`) |
 
-Optional: run the same job on Azure as a **Container Apps Job** — see `infra/aca-job-daily-train.md` and `Dockerfile`.
+### ACA + ACR (`airagacr`) — run training inside Azure
+
+```bash
+az login
+cd AiDecisionMakingML
+# .env with AZURE_SQL_* and AZURE_STORAGE_ACCOUNT_KEY (or use Backend/db/.env)
+./infra/deploy-aca-daily-train.sh --run-now
+```
+
+Or: GitHub Actions → **Deploy ACA daily train (airagacr)** (needs `AZURE_CREDENTIALS` + SQL/Blob secrets).
+
+See `infra/aca-job-daily-train.md` and `Dockerfile`.
 
 **Blob layout** (container `logistic`):
 
