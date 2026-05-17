@@ -43,30 +43,29 @@ python train.py --daily          # version tag = UTC date, for scheduled jobs
 python train.py --no-upload --out artifacts/risk_pipeline_v1.json
 ```
 
-## Daily train (`ai-rag-ml`)
+## Daily train on Azure (`ai-rag-ml`)
 
-**GitHub Actions** (`.github/workflows/daily-train.yml`): runs at **02:15 UTC** daily and on manual dispatch; trains and uploads weights to **airagblob** / **logistic**.
+**Deploy workflow** (`.github/workflows/deploy-aca-daily-train.yml`):
 
-Configure repository secrets:
+1. Build Docker in **airagacr** (ACR)  
+2. Deploy **Container Apps Job** with cron **`15 2 * * *`** (daily 02:15 UTC)  
+3. Each run executes `python train.py --daily` → **airagblob** / **logistic**
 
-| Secret | Required |
-|--------|----------|
-| `AZURE_SQL_SERVER`, `AZURE_SQL_DATABASE`, `AZURE_SQL_USER`, `AZURE_SQL_PASSWORD` | Yes (or `AZURE_SQL_CONNECTION_STRING`) |
-| `AZURE_STORAGE_ACCOUNT_KEY` | Yes (or `AZURE_STORAGE_CONNECTION_STRING`) |
-| `AZURE_STORAGE_ACCOUNT_NAME` | Optional (default `airagblob`) |
+Actions → **Deploy ai-rag-ml (Docker + daily scheduler)** → Run workflow.
 
-### ACA + ACR (`airagacr`) — run training inside Azure
+| GitHub secret | Purpose |
+|---------------|---------|
+| `AZURE_CREDENTIALS` | Deploy to Azure |
+| `AZURE_SQL_USER`, `AZURE_SQL_PASSWORD` | Job runtime → SQL |
+| `AZURE_STORAGE_ACCOUNT_KEY` | Job runtime → Blob |
 
-```bash
-az login
-cd AiDecisionMakingML
-# .env with AZURE_SQL_* and AZURE_STORAGE_ACCOUNT_KEY (or use Backend/db/.env)
-./infra/deploy-aca-daily-train.sh --run-now
-```
+Optional variable `USE_KEYVAULT_FOR_ACA_DEPLOY=true` to pull passwords from **ai-rag-key** instead of GitHub.
 
-Or: GitHub Actions → **Deploy ACA daily train (airagacr)** (needs `AZURE_CREDENTIALS` + SQL/Blob secrets).
+`daily-train.yml` is optional (GitHub runner, manual only); **scheduler lives on Azure after deploy**.
 
-See `infra/aca-job-daily-train.md` and `Dockerfile`.
+### Local / CLI deploy
+
+See `infra/secrets-cloud-only.md`, `infra/aca-job-daily-train.md`, `Dockerfile`.
 
 **Blob layout** (container `logistic`):
 
