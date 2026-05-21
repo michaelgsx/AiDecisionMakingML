@@ -34,7 +34,7 @@ name: Deploy ai-rag-ml (Docker + daily scheduler)
 on:
   workflow_dispatch:
   push:
-    branches: [v1]
+    branches: [main]
     paths:
       - "Dockerfile"
       - "requirements.txt"
