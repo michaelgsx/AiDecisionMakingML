@@ -174,23 +174,26 @@ else
 fi
 
 if az containerapp job show --name "$JOB_NAME" --resource-group "$RG" -o none 2>/dev/null; then
-  UPDATE_CMD=(
-    az containerapp job update
-    --name "$JOB_NAME"
-    --resource-group "$RG"
-    --image "$FULL_IMAGE"
-    --cpu 0.5
-    --memory 1.0Gi
-    --registry-server "$LOGIN_SERVER"
-    --registry-username "$ACR_USER"
-    --registry-password "$ACR_PASS"
+  az containerapp job update \
+    --name "$JOB_NAME" \
+    --resource-group "$RG" \
+    --image "$FULL_IMAGE" \
+    --cpu 0.5 \
+    --memory 1.0Gi \
+    --cron-expression "$CRON" \
     --set-env-vars "${ENV_VARS[@]}"
-    --cron-expression "$CRON"
-  )
+  az containerapp job registry set \
+    --name "$JOB_NAME" \
+    --resource-group "$RG" \
+    --server "$LOGIN_SERVER" \
+    --username "$ACR_USER" \
+    --password "$ACR_PASS"
   if [[ ${#SECRET_ARGS[@]} -gt 0 ]]; then
-    UPDATE_CMD+=("${SECRET_ARGS[@]}")
+    az containerapp job secret set \
+      --name "$JOB_NAME" \
+      --resource-group "$RG" \
+      "${SECRET_ARGS[@]}"
   fi
-  "${UPDATE_CMD[@]}"
 else
   if [[ "$SKIP_SECRET_UPDATE" == true ]]; then
     echo "ERROR: Job does not exist yet; cannot use --skip-secret-update on first deploy." >&2

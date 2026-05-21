@@ -72,7 +72,7 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Add Container Apps CLI extension
-        run: az extension add --name containerapp --only-show-errors
+        run: az extension add --name containerapp --upgrade --only-show-errors
 
       - name: Resolve ACR resource group and login server
         id: acr
@@ -175,22 +175,28 @@ jobs:
           )
 
           if az containerapp job show --name "${{ env.JOB_NAME }}" --resource-group "$RG" -o none 2>/dev/null; then
-            echo "Updating job ${{ env.JOB_NAME }} (image + schedule + secrets) ..."
+            echo "Updating job ${{ env.JOB_NAME }} (image + schedule + env) ..."
+            # job update does not accept --trigger-type, --registry-*, or --secrets (use subcommands)
             az containerapp job update \
               --name "${{ env.JOB_NAME }}" \
               --resource-group "$RG" \
               --image "$FULL_IMAGE" \
-              --trigger-type Schedule \
               --cron-expression "$CRON" \
               --cpu 0.5 \
               --memory 1.0Gi \
               --replica-timeout 1800 \
               --replica-retry-limit 1 \
-              --registry-server "$LOGIN_SERVER" \
-              --registry-username "$ACR_USER" \
-              --registry-password "$ACR_PASS" \
-              --secrets "azure-sql-password=$SQL_PW" "azure-storage-account-key=$BLOB_KEY" \
               --set-env-vars "${ENV_VARS[@]}"
+            az containerapp job registry set \
+              --name "${{ env.JOB_NAME }}" \
+              --resource-group "$RG" \
+              --server "$LOGIN_SERVER" \
+              --username "$ACR_USER" \
+              --password "$ACR_PASS"
+            az containerapp job secret set \
+              --name "${{ env.JOB_NAME }}" \
+              --resource-group "$RG" \
+              --secrets "azure-sql-password=$SQL_PW" "azure-storage-account-key=$BLOB_KEY"
           else
             echo "Creating scheduled job ${{ env.JOB_NAME }} (cron: $CRON) ..."
             az containerapp job create \
