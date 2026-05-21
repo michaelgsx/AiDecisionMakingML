@@ -1,31 +1,48 @@
-# AiDecisionMakingML
+# AI Decision Making — ML
 
-Three-stage **logistic regression** risk pipeline trained on **binned one-hot** features from Azure SQL (`ai-rag-db-1`) and labels from `risk_decisions`.
+Three-stage **logistic regression** pipeline: train on **binned one-hot** features and decision labels from Azure SQL, export normalized weights to **Azure Blob** (`airagblob` / `logistic`). Third repo in the platform; see [Related repositories](#related-repositories).
+
+> **Synthetic data & schema disclaimer**  
+> Training reads **AI-generated demo data** seeded in the backend (`seed_data.py`) and feature layouts produced by offline calibration scripts. **Labels, feature names, and bin edges are not from a real production fraud program.** Model artifacts are for integration testing and pipeline demos only—not for automated decisions on live customers without a full model governance process.
+
+## Related repositories
+
+| Repository | Role |
+|------------|------|
+| [AiDecisionMakingBackend](https://github.com/michaelgsx/AiDecisionMakingBackend) | API, SQL schema, bin calibration, embeddings |
+| [AiDecisionMakingFrontend](https://github.com/michaelgsx/AiDecisionMakingFrontend) | Ingest / Assess UI |
+| **This repo** | `train.py` + daily ACA scheduled job |
+
+**Design specs:** [Backend `.ai/05-ml-logistic-pipeline.md`](https://github.com/michaelgsx/AiDecisionMakingBackend/blob/v1/.ai/05-ml-logistic-pipeline.md), [`.ai/10-cicd-and-ops.md`](https://github.com/michaelgsx/AiDecisionMakingBackend/blob/v1/.ai/10-cicd-and-ops.md).
+
+**Branch:** `v1`.
 
 ## Business cascade
 
 | Step | Model | Positive class | When |
 |------|--------|----------------|------|
-| 1 | `reject_vs_non_reject` | reject | Highest priority — block first |
-| 2 | `freeze_vs_pass` | freeze (ever froze) | Only if step 1 says non-reject |
-| 3 | `manual_review` | manual path | If step 2 freeze and manual score high |
+| 1 | `reject_vs_non_reject` | reject | Highest priority |
+| 2 | `freeze_vs_pass` | freeze (ever froze) | If step 1 is non-reject |
+| 3 | `manual_review` | manual path | Freeze + high manual score |
 
 **Inference:** reject → else freeze vs pass → if freeze and manual score → `manual_review`, else `freeze` → else `pass`.
 
-Coefficients are **L2-normalized** per stage before export (weights unit norm; intercept scaled consistently).
+Coefficients are **L2-normalized** per stage before export.
 
-## Data sources
+## Data sources (Azure SQL)
 
 | Table | Use |
 |-------|-----|
-| `dbo.risk_feature_binned` | `onehot_json` (join `calibration_id`) |
-| `dbo.risk_feature_bin_calibrations` | `flatten_layout_json`, feature names |
-| `dbo.risk_decisions` | Labels (latest row = final; history for freeze / manual) |
+| `dbo.risk_feature_binned` | `onehot_json` |
+| `dbo.risk_feature_bin_calibrations` | `flatten_layout_json` |
+| `dbo.risk_decisions` | Labels (demo / AI-seeded rows) |
 
-Run backend bin calibration first:
+Prerequisites in the backend repo:
 
 ```bash
 cd ../AiDecisionMakingBackend
+python db/run_migrations.py
+python db/seed_data.py              # optional synthetic rows
 python db/offline_bin_calibration.py --save-db
 ```
 
@@ -35,33 +52,31 @@ python db/offline_bin_calibration.py --save-db
 cd AiDecisionMakingML
 pip install -r requirements.txt
 cp .env.example .env
-# SQL: copy from AiDecisionMakingBackend/db/.env
+# SQL: same as AiDecisionMakingBackend/db/.env
 # Blob: AZURE_STORAGE_ACCOUNT_NAME=airagblob, AZURE_STORAGE_ACCOUNT_KEY=...
 
 python train.py
-python train.py --daily          # version tag = UTC date, for scheduled jobs
+python train.py --daily              # artifact tag = UTC date
 python train.py --no-upload --out artifacts/risk_pipeline_v1.json
 ```
 
-## Daily train on Azure (`ai-rag-ml`)
+## Daily train on Azure
 
-**Deploy workflow** (`.github/workflows/deploy-aca-daily-train.yml`):
+**Workflow:** `.github/workflows/deploy-aca-daily-train.yml`
 
-1. Build Docker in **airagacr** (ACR)  
-2. Deploy **Container Apps Job** with cron **`15 2 * * *`** (daily 02:15 UTC)  
-3. Each run executes `python train.py --daily` → **airagblob** / **logistic**
-
-Actions → **Deploy ai-rag-ml (Docker + daily scheduler)** → Run workflow.
+1. Build image in **ACR** `airagacr`  
+2. Deploy **Container Apps Job** `ai-rag-ml-daily-train` (cron `15 2 * * *` UTC)  
+3. Run `python train.py --daily` → Blob prefix `models/`
 
 | GitHub secret | Purpose |
 |---------------|---------|
 | `AZURE_CREDENTIALS` | Deploy to Azure |
-| `AZURE_SQL_USER`, `AZURE_SQL_PASSWORD` | Job runtime → SQL |
-| `AZURE_STORAGE_ACCOUNT_KEY` | Job runtime → Blob |
+| `AZURE_SQL_USER`, `AZURE_SQL_PASSWORD` | Job → SQL |
+| `AZURE_STORAGE_ACCOUNT_KEY` | Job → Blob |
 
-Optional variable `USE_KEYVAULT_FOR_ACA_DEPLOY=true` to pull passwords from **ai-rag-key** instead of GitHub.
+Optional: `USE_KEYVAULT_FOR_ACA_DEPLOY=true` → secrets from Key Vault `ai-rag-key`.
 
-`daily-train.yml` is optional (GitHub runner, manual only); **scheduler lives on Azure after deploy**.
+`daily-train.yml` is manual/GitHub-runner only; **production schedule is ACA Job**.
 
 ### Local / CLI deploy
 
@@ -73,7 +88,7 @@ See `infra/secrets-cloud-only.md`, `infra/aca-job-daily-train.md`, `Dockerfile`.
 - `models/risk_pipeline_YYYY-MM-DD.json`
 - `models/daily/YYYY-MM-DD/risk_pipeline.json`
 
-## Env
+## Environment
 
 | Variable | Default |
 |----------|---------|
@@ -93,4 +108,14 @@ src/risk_pipeline/
   pipeline.py         # Orchestration + artifact JSON
   blob_export.py      # Upload to Azure Blob
 train.py              # CLI
+Dockerfile
+.github/workflows/
 ```
+
+## Future backend integration
+
+Spring assess may later load `models/risk_pipeline_latest.json` for a tabular score alongside the LLM; not wired in API today.
+
+## License & use
+
+Training code for pipeline demonstration. Replace synthetic SQL data and re-validate models before production scoring.
